@@ -1,6 +1,6 @@
 objects := main.o LZC.o
-libs := 
-header := -I./ 
+libs := -L./lib -lfreeimage
+header := -I./ -I./include 
 CXX=g++
 output=lzc_decrypt
 

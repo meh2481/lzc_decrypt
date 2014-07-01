@@ -25,6 +25,12 @@ typedef struct
 	uint8_t a;
 } paletteEntry;
 
+typedef struct
+{
+	uint8_t* data;
+	uint32_t size;
+} chunk;
+
 #define PIXEL paletteEntry
 
 #define NUM_PALETTE_ENTRIES	256
@@ -96,7 +102,7 @@ bool DecompressANB(string sFilename)
 		int iNum = 0;
 		bool bTexHeader = true;
 		texHeader th;
-		vector<uint8_t> vMultiChunkData;	//If an image is compressed over multiple chunks, hang onto previous ones and attempt to reconstruct it
+		vector<chunk> vMultiChunkData;	//If an image is compressed over multiple chunks, hang onto previous ones and attempt to reconstruct it
 		for(uint64_t i = 0; i < fileSize; i++)	//Definitely not the fastest way to do it... but I don't care
 		{
 			if(memcmp(&(dataIn[i]), "LZC", 3) == 0)	//Found another header
@@ -125,11 +131,12 @@ bool DecompressANB(string sFilename)
 				LZC_SIZE_T decomp_size = LZC_GetDecompressedSize(&(dataIn[i]));
 				if(decomp_size)
 				{
+					bool bChunk = false;
 					//cout << "Decompressed size: " << decomp_size << ", needs to be at least " << th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry) << endl;
 					if(decomp_size < th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry)) 
 					{
 						//cout << "Skipping" << endl;
-						continue;	//Skip if this is obviously a bad size
+						bChunk = true;	//Skip if this is obviously a bad size
 					}
 					//cout << "Not skipping" << endl;
 					//if(iNum <=1) continue;
@@ -139,10 +146,32 @@ bool DecompressANB(string sFilename)
 					uint8_t* dataOut = (uint8_t*)malloc(decomp_size);
 					LZC_Decompress(&(dataIn[i]), dataOut);
 					
-					ostringstream oss;
-					oss << "./output/img_" << ++iNum << ".png";
-					saveImage(dataOut, decomp_size, th.width, th.height, oss.str());
-					free(dataOut);
+					if(!bChunk)
+					{
+						ostringstream oss;
+						oss << "./output/img_" << ++iNum << ".png";
+						saveImage(dataOut, decomp_size, th.width, th.height, oss.str());
+						free(dataOut);
+					}
+					else
+					{
+						chunk c;
+						c.data = dataOut;
+						c.size = decomp_size;
+						vMultiChunkData.push_back(c);
+						uint32_t totalSz = 0;
+						for(vector<chunk>::iterator it = vMultiChunkData.begin(); it != vMultiChunkData.end(); it++)
+							totalSz += it->size;
+						if(totalSz >= th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry))
+						{
+							//TODO
+							for(vector<chunk>::iterator it = vMultiChunkData.begin(); it != vMultiChunkData.end(); it++)
+								free(it->data);
+							vMultiChunkData.clear();
+							if(totalSz != th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry))
+								cout << "Doing thing: " << totalSz << "," << th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry) << endl;
+						}
+					}
 				}
 				else
 					cerr << "ERR decompressing image " << iNum << endl;

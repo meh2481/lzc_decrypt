@@ -94,27 +94,44 @@ bool DecompressANB(string sFilename)
 		system("mkdir -p output");
 		
 		int iNum = 0;
-		bool bTexHeader = false;
+		bool bTexHeader = true;
+		texHeader th;
+		vector<uint8_t> vMultiChunkData;	//If an image is compressed over multiple chunks, hang onto previous ones and attempt to reconstruct it
 		for(uint64_t i = 0; i < fileSize; i++)	//Definitely not the fastest way to do it... but I don't care
 		{
-			texHeader th;
 			if(memcmp(&(dataIn[i]), "LZC", 3) == 0)	//Found another header
 			{
-				bTexHeader = !bTexHeader;
-				if(bTexHeader)
+				texHeader thTest;
+				uint64_t headerPos = i - sizeof(texHeader);
+				memcpy(&thTest, &(dataIn[headerPos]), sizeof(texHeader));
+				if(thTest.width > 2048 || thTest.width < 16) 
 				{
-					uint64_t headerPos = i - sizeof(texHeader);
-					memcpy(&th, &(dataIn[headerPos]), sizeof(texHeader));
-					//cout << "Tex header size: " << th.width << "," << th.height << endl;
+					//cout << "1 Tex header size: " << thTest.width << "," << thTest.height << endl;
+					//continue;
+				}
+				else
+				{
+					th = thTest;
+					memcpy(&th, &thTest, sizeof(texHeader));
+					//cout << "2 Tex header size: " << thTest.width << "," << thTest.height << endl;
 					continue;
 				}
+				//cout << "Tex header size: " << th.width << "," << th.height << endl;
+				//if(bTexHeader)
 				
-				if(th.width > 2048 || th.width < 16) continue; 
+				
+				
 				//if(dataIn[i + 5] == 'W') continue;
 				LZC_SIZE_T decomp_size = LZC_GetDecompressedSize(&(dataIn[i]));
 				if(decomp_size)
 				{
-					if(decomp_size < th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry)) continue;	//Skip if this is obviously a bad size
+					//cout << "Decompressed size: " << decomp_size << ", needs to be at least " << th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry) << endl;
+					if(decomp_size < th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry)) 
+					{
+						//cout << "Skipping" << endl;
+						continue;	//Skip if this is obviously a bad size
+					}
+					//cout << "Not skipping" << endl;
 					//if(iNum <=1) continue;
 					//cout << "Found image at " << i << ". Decompressed size: " << decomp_size << endl;
 					//for (int j = i; j < i + 10; j++)
@@ -127,6 +144,8 @@ bool DecompressANB(string sFilename)
 					saveImage(dataOut, decomp_size, th.width, th.height, oss.str());
 					free(dataOut);
 				}
+				else
+					cerr << "ERR decompressing image " << iNum << endl;
 			}
 		}
 	}

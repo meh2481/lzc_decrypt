@@ -166,7 +166,8 @@ bool DecompressANB(string sFilename)
 						
 						//If we've got too MUCH data now, spit out a warning and attempt to continue
 						if(totalSz != th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry))
-							cout << "Warning: LZC chunk size mismatch in image " << iNum+1 << ". Got " << totalSz << " bytes, expected " << th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry) << endl;
+							cout << "Warning: LZC chunk size mismatch in file " << sFilename << " image " << iNum+1 << ". Got " 
+								<< totalSz << " bytes, expected " << th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry) << endl;
 						
 						//Done. We can save the image
 						ostringstream oss;
@@ -191,7 +192,9 @@ int main(int argc, char** argv)
 		return 1;
 	}
 	
-	DecompressANB(argv[1]);
+	//Decompress any .anb files we're given
+	for(int i = 1; i < argc; i++)
+		DecompressANB(argv[i]);
 	
 	return 0;
 }

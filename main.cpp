@@ -8,10 +8,14 @@
 #include <cmath>
 #include <sstream>
 #include "FreeImage.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 using namespace std;
 
 bool g_bPieceTogether;
 bool g_bAdd;
+int32_t g_iOffset;
 
 typedef struct
 {
@@ -63,27 +67,11 @@ typedef struct
 	//piece[]
 } PiecesDesc;
 
-int powerof2(int orig)
-{
-	int result = 1;
-	while(result < orig)
-		result <<= 1;
-	return result;
-}
-
 #define NUM_PALETTE_ENTRIES		256
 #define MAGIC_IMAGE_TOOWIDE		10000	//Yay! These numbers are magic!
 #define MAGIC_IMAGE_TOONARROW	16
 #define MAGIC_TEX_TOOBIG		6475888
 #define	MAGIC_TOOMANYPIECES		128
-
-uint32_t byteswap(uint32_t start)
-{
-	uint32_t newInt = start ^ ((start >> 16) & 0x000000FF);
-	newInt = newInt ^ ((newInt << 16) & 0x00FF0000);
-	newInt = newInt ^ ((newInt >> 16) & 0x000000FF);
-	return newInt;
-}
 
 FIBITMAP* imageFromPixels(uint8_t* imgData, uint32_t width, uint32_t height)
 {
@@ -184,13 +172,6 @@ FIBITMAP* PieceImage(uint8_t* imgData, list<piece> pieces, Vec2 maxul, Vec2 maxb
 //Save the given image to an external file
 bool saveImage(uint8_t* data, uint32_t dataSz, uint32_t width, uint32_t height, string sFilename, list<piece> pieces, Vec2 maxul, Vec2 maxbr, texHeader th)
 {
-	cout << "Saving image " << sFilename << endl;
-	for(list<piece>::iterator lpi = pieces.begin(); lpi != pieces.end(); lpi++)
-		cout << "Piece found: " << lpi->topLeft.x << ", " << lpi->topLeft.y  << ", "
-		<< lpi->topLeftUV.x  << ", " << lpi->topLeftUV.y << ", " 
-		<< lpi->bottomRight.x << ", " << lpi->bottomRight.y << ", "
-		<< lpi->bottomRightUV.x  << ", " << lpi->bottomRightUV.y << endl;
-		
 	//Read in the image palette
 	vector<paletteEntry> palEntries;
 	uint8_t* cur_data_ptr = data;
@@ -223,6 +204,7 @@ bool saveImage(uint8_t* data, uint32_t dataSz, uint32_t width, uint32_t height, 
 	
 	if(!bmp) return false;
 	//Save image as PNG
+	cout << "Saving image " << sFilename << endl;
 	bool bRet = FreeImage_Save(FIF_PNG, bmp, sFilename.c_str());
 	FreeImage_Unload(bmp);
 	return bRet;
@@ -230,6 +212,7 @@ bool saveImage(uint8_t* data, uint32_t dataSz, uint32_t width, uint32_t height, 
 
 bool DecompressANB(string sFilename)
 {
+	cout << "Decompressing anb file " << sFilename << endl;
 	//Read the whole file into memory up front
 	FILE* f = fopen(sFilename.c_str(), "rb");
 	if(f == NULL)
@@ -243,9 +226,6 @@ bool DecompressANB(string sFilename)
 	uint8_t* dataIn = (uint8_t*)malloc(fileSize);
 	fread(dataIn, fileSize, 1, f);
 	fclose(f);
-	
-	//Create the folder that we'll be outputting our images into (TODO: More cross-platform way of doing this)
-	system("mkdir -p output");
 	
 	//Figure out what we'll be naming the images
 	string sName = sFilename;
@@ -289,43 +269,21 @@ bool DecompressANB(string sFilename)
 				if(g_bPieceTogether)
 				{
 					if(iNum == 0)	//First one tells us where to start searching backwards from
-					{
 						startPos = i;
-						cout << "Setting starting pos to " << startPos << endl;
-						cout << "Start - sizeof(texheader) " << startPos - sizeof(texHeader) << endl;
-					}
 					for(int k = startPos - sizeof(texHeader) - sizeof(FrameDesc); k > 0; k --)
 					{
-						//piece p;
-						//memcpy(&p, &(dataIn[k]), sizeof(piece));
-						//if(p.topLeftUV.x >= -10 && p.topLeftUV.x <= 10 &&
-						//	p.bottomRightUV.x >= -10 && p.bottomRightUV.x <= 10 &&
-						//	p.bottomRight.x >= 0 && p.bottomRight.x <= th.width &&
-						//	p.bottomRight.y >= 0 && p.bottomRight.y <= th.height
-						//)
-						//	cout << "Piece found: " << p.topLeft.x << ", " << p.topLeft.y  << ", "
-						//		<< p.topLeftUV.x  << ", " << p.topLeftUV.y << ", " 
-						//		<< p.bottomRight.x << ", " << p.bottomRight.y << ", "
-						//		<< p.bottomRightUV.x  << ", " << p.bottomRightUV.y << endl;
 						memcpy(&fd, &(dataIn[k]), sizeof(FrameDesc));
-						//fd.texOffset = byteswap(fd.texOffset);
-						if(abs((int32_t)fd.texOffset - (int32_t)headerPos) == 24)
-							cout << ((int32_t)fd.texOffset - (int32_t)headerPos) << endl;
-						if(fd.texOffset != headerPos + 24) continue;
+						if(fd.texOffset != headerPos + g_iOffset) continue;
 						//Sanity check
 						if(fd.texDataSize > MAGIC_TEX_TOOBIG) continue;
-						if(fd.texOffset == 0 || fd.pieceOffset < 24 || fd.pieceOffset + sizeof(PiecesDesc) > fileSize) continue;
+						if(fd.texOffset == 0 || fd.pieceOffset < g_iOffset || fd.pieceOffset + sizeof(PiecesDesc) > fileSize) continue;
 						
 						//Ok, found our header. Grab pieces
-						cout << "Found header" << endl;
 						pieces.clear();
 						PiecesDesc pd;
-						fd.pieceOffset -= 24;
-						cout << "Piece offset: " << fd.pieceOffset << " , data size: " << fileSize << endl;
+						fd.pieceOffset -= g_iOffset;
 						memcpy(&pd, &(dataIn[fd.pieceOffset]), sizeof(PiecesDesc));
-						cout << "Pieces: " << pd.numPieces << endl;
 						if(pd.numPieces < 0 || pd.numPieces > MAGIC_TOOMANYPIECES) continue;
-						//continue;
 						maxul.x = maxul.y = maxbr.x = maxbr.y = 0;
 						for(int32_t j = 0; j < pd.numPieces; j++)
 						{
@@ -409,20 +367,80 @@ bool DecompressANB(string sFilename)
 	free(dataIn);
 }
 
+int usage()
+{
+	cout << "Usage: lzc_decrypt [-add|-nopiece|-offset=x] file.anb" << endl;
+	return 1;
+}
+
 int main(int argc, char** argv)
 {
 	g_bPieceTogether = true;
 	g_bAdd = false;
+	g_iOffset = 0;
 	
-	if(argc < 2)
+	list<string> sFilenames;
+	//Parse commandline
+	for(int i = 1; i < argc; i++)
 	{
-		cout << "Usage: lzc_decrypt [file.anb]" << endl;
-		return 1;
+		string s = argv[i];
+		if(s == "-add")
+			g_bAdd = true;
+		else if(s == "-nopiece")
+			g_bPieceTogether = false;
+		else if(s.find(".anb") != string::npos)
+			sFilenames.push_back(s);
+		else if(s.find("-offset=") != string::npos)
+		{
+			size_t pos = s.find("-offset=") + 8;
+			s.erase(0, pos);
+			istringstream iss(s);
+			if(!(iss >> g_iOffset))
+				g_iOffset = 0;
+		}
+		else
+			cout << "Unrecognized commandline argument " << s << endl;
 	}
 	
-	//Decompress any .anb files we're given
-	for(int i = 1; i < argc; i++)
-		DecompressANB(argv[i]);
+	if(!sFilenames.size())
+		return usage();
 	
+	//Create the folder that we'll be outputting our images into
+#ifdef _WIN32
+	CreateDirectory(TEXT("output"), NULL);
+#else
+	system("mkdir -p output");
+#endif
+	
+	//Decompress any .anb files we're given
+	for(list<string>::iterator i = sFilenames.begin(); i != sFilenames.end(); i++)
+		DecompressANB((*i));
+	
+	cout << "Press any key to exit...";
+	cin.get();
 	return 0;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

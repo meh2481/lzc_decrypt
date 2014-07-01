@@ -4,3 +4,4 @@ lzc_decrypt
 .directory
 *.anb
 gmon.out
+output/*

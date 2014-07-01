@@ -2,11 +2,16 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <list>
 #include <stdlib.h>
 #include <cstdio>
+#include <cmath>
 #include <sstream>
 #include "FreeImage.h"
 using namespace std;
+
+bool g_bPieceTogether;
+bool g_bAdd;
 
 typedef struct
 {
@@ -31,13 +36,161 @@ typedef struct
 	uint32_t size;
 } chunk;
 
+typedef struct  
+{
+	int32_t	 texOffset; // offset from start of file to TexDesc
+	int32_t  texDataSize;
+	int32_t  pieceOffset; // offset from start of file to PiecesDesc
+} FrameDesc;
+
+typedef struct
+{
+	float x;
+	float y;
+} Vec2;
+
+typedef struct 
+{
+	Vec2 topLeft;
+	Vec2 topLeftUV;
+	Vec2 bottomRight;
+	Vec2 bottomRightUV;
+} piece;
+
+typedef struct
+{
+	int32_t numPieces;
+	//piece[]
+} PiecesDesc;
+
+int powerof2(int orig)
+{
+	int result = 1;
+	while(result < orig)
+		result <<= 1;
+	return result;
+}
+
 #define NUM_PALETTE_ENTRIES		256
-#define MAGIC_IMAGE_TOOWIDE		2048	//Yay! These numbers are magic!
+#define MAGIC_IMAGE_TOOWIDE		10000	//Yay! These numbers are magic!
 #define MAGIC_IMAGE_TOONARROW	16
+#define MAGIC_TEX_TOOBIG		6475888
+#define	MAGIC_TOOMANYPIECES		128
+
+uint32_t byteswap(uint32_t start)
+{
+	uint32_t newInt = start ^ ((start >> 16) & 0x000000FF);
+	newInt = newInt ^ ((newInt << 16) & 0x00FF0000);
+	newInt = newInt ^ ((newInt >> 16) & 0x000000FF);
+	return newInt;
+}
+
+FIBITMAP* imageFromPixels(uint8_t* imgData, uint32_t width, uint32_t height)
+{
+	//return FreeImage_ConvertFromRawBits(imgData, width, height, width*4, 32, 0xFF0000, 0x00FF00, 0x0000FF, true);	//Doesn't seem to work
+	FIBITMAP* curImg = FreeImage_Allocate(width, height, 32);
+	FREE_IMAGE_TYPE image_type = FreeImage_GetImageType(curImg);
+	if(image_type == FIT_BITMAP)
+	{
+		int curPos = 0;
+		unsigned pitch = FreeImage_GetPitch(curImg);
+		BYTE* bits = (BYTE*)FreeImage_GetBits(curImg);
+		bits += pitch * height - pitch;
+		for(int y = height-1; y >= 0; y--)
+		{
+			BYTE* pixel = (BYTE*)bits;
+			for(int x = 0; x < width; x++)
+			{
+				pixel[FI_RGBA_BLUE] = imgData[curPos++];
+				pixel[FI_RGBA_GREEN] = imgData[curPos++];
+				pixel[FI_RGBA_RED] = imgData[curPos++];
+				pixel[FI_RGBA_ALPHA] = imgData[curPos++];
+				pixel += 4;
+			}
+			bits -= pitch;
+		}
+	}
+	return curImg;
+}
+
+FIBITMAP* PieceImage(uint8_t* imgData, list<piece> pieces, Vec2 maxul, Vec2 maxbr, texHeader th, bool bAdd)
+{
+	Vec2 OutputSize;
+	Vec2 CenterPos;
+	OutputSize.x = -maxul.x + maxbr.x;
+	OutputSize.y = maxul.y - maxbr.y;
+	CenterPos.x = -maxul.x;
+	CenterPos.y = maxul.y;
+	OutputSize.x = uint32_t(OutputSize.x);
+	OutputSize.y = uint32_t(OutputSize.y);
+
+	FIBITMAP* result = FreeImage_Allocate(OutputSize.x+6, OutputSize.y+6, 32);
+
+	//Create image from this set of pixels
+	FIBITMAP* curImg = imageFromPixels(imgData, th.width, th.height);
+
+	//Patch image together from pieces
+	for(list<piece>::iterator lpi = pieces.begin(); lpi != pieces.end(); lpi++)
+	{
+		float add = 0;
+		if(bAdd)
+			add = 0.001;
+		FIBITMAP* imgPiece = FreeImage_Copy(curImg, 
+											floor((lpi->topLeftUV.x) * th.width - add), floor((lpi->topLeftUV.y) * th.height - add), 
+											ceil((lpi->bottomRightUV.x) * th.width + add), ceil((lpi->bottomRightUV.y) * th.height + add));
+		
+		//Since FreeImage pasting doesn't allow you to paste an image onto a particular position of another, do that by hand
+		int curPos = 0;
+		int srcW = FreeImage_GetWidth(imgPiece);
+		int srcH = FreeImage_GetHeight(imgPiece);
+		unsigned pitch = FreeImage_GetPitch(imgPiece);
+		unsigned destpitch = FreeImage_GetPitch(result);
+		BYTE* bits = (BYTE*)FreeImage_GetBits(imgPiece);
+		BYTE* destBits = (BYTE*)FreeImage_GetBits(result);
+		Vec2 DestPos = CenterPos;
+		DestPos.x += lpi->topLeft.x;
+		//DestPos.y -= lpi->topLeft.y;
+		DestPos.y = OutputSize.y - srcH;
+		DestPos.y -= CenterPos.y;
+		DestPos.y += lpi->topLeft.y;
+		DestPos.x = (unsigned int)(DestPos.x);
+		DestPos.y = ceil(DestPos.y);
+		for(int y = 0; y < srcH; y++)
+		{
+			BYTE* pixel = bits;
+			BYTE* destpixel = destBits;
+			destpixel += (unsigned)((DestPos.y + y + 3)) * destpitch;
+			destpixel += (unsigned)((DestPos.x + 3) * 4);
+			for(int x = 0; x < srcW; x++)
+			{
+				destpixel[FI_RGBA_RED] = pixel[FI_RGBA_RED];
+				destpixel[FI_RGBA_GREEN] = pixel[FI_RGBA_GREEN];
+				destpixel[FI_RGBA_BLUE] = pixel[FI_RGBA_BLUE];
+				//if(pixel[FI_RGBA_ALPHA] != 0)
+					destpixel[FI_RGBA_ALPHA] = pixel[FI_RGBA_ALPHA];
+				pixel += 4;
+				destpixel += 4;
+			}
+			bits += pitch;
+		}
+		
+		FreeImage_Unload(imgPiece);
+	}
+	FreeImage_Unload(curImg);
+	
+	return result;
+}
 
 //Save the given image to an external file
-bool saveImage(uint8_t* data, uint32_t dataSz, uint32_t width, uint32_t height, string sFilename)
+bool saveImage(uint8_t* data, uint32_t dataSz, uint32_t width, uint32_t height, string sFilename, list<piece> pieces, Vec2 maxul, Vec2 maxbr, texHeader th)
 {
+	cout << "Saving image " << sFilename << endl;
+	for(list<piece>::iterator lpi = pieces.begin(); lpi != pieces.end(); lpi++)
+		cout << "Piece found: " << lpi->topLeft.x << ", " << lpi->topLeft.y  << ", "
+		<< lpi->topLeftUV.x  << ", " << lpi->topLeftUV.y << ", " 
+		<< lpi->bottomRight.x << ", " << lpi->bottomRight.y << ", "
+		<< lpi->bottomRightUV.x  << ", " << lpi->bottomRightUV.y << endl;
+		
 	//Read in the image palette
 	vector<paletteEntry> palEntries;
 	uint8_t* cur_data_ptr = data;
@@ -62,9 +215,14 @@ bool saveImage(uint8_t* data, uint32_t dataSz, uint32_t width, uint32_t height, 
 		imgData.push_back(pixel.a);
 	}
 	
-	//Save image as PNG
-	FIBITMAP* bmp = FreeImage_ConvertFromRawBits(imgData.data(), width, height, width * 4, 32, 0x0000FF, 0x00FF00, 0xFF0000, true);
+	FIBITMAP* bmp;
+	if(pieces.size())	//If we're patching pieces together (if g_bPieceTogether == true)
+		bmp = PieceImage(imgData.data(), pieces, maxul, maxbr, th, g_bAdd);
+	else
+		bmp = FreeImage_ConvertFromRawBits(imgData.data(), width, height, width * 4, 32, 0x0000FF, 0x00FF00, 0xFF0000, true);
+	
 	if(!bmp) return false;
+	//Save image as PNG
 	bool bRet = FreeImage_Save(FIF_PNG, bmp, sFilename.c_str());
 	FreeImage_Unload(bmp);
 	return bRet;
@@ -106,9 +264,15 @@ bool DecompressANB(string sFilename)
 	int iNum = 0;
 	bool bTexHeader = true;
 	texHeader th;
-	uint64_t headerPos;
+	FrameDesc fd;
+	int32_t headerPos;
+	int32_t startPos = 0;
 	vector<chunk> vMultiChunkData;	//If an image is compressed over multiple chunks, hang onto previous ones and attempt to reconstruct it
-	for(uint64_t i = 0; i < fileSize; i++)	//Definitely not the fastest way to do it... but I don't care
+	Vec2 maxul;
+	Vec2 maxbr;
+	maxul.x = maxul.y = maxbr.x = maxbr.y = 0;
+	list<piece> pieces;
+	for(int32_t i = 0; i < fileSize; i++)	//Definitely not the fastest way to do it... but I don't care
 	{
 		if(memcmp(&(dataIn[i]), "LZC", 3) == 0)	//Found another LZC header
 		{
@@ -118,8 +282,69 @@ bool DecompressANB(string sFilename)
 			memcpy(&thTest, &(dataIn[headerPos]), sizeof(texHeader));
 			if(thTest.width < MAGIC_IMAGE_TOOWIDE && thTest.width > MAGIC_IMAGE_TOONARROW)	//Sanity check to be sure this is a valid header
 			{
-				th = thTest;
+				//Save this
 				memcpy(&th, &thTest, sizeof(texHeader));
+					
+				//Search for frame header if we're going to be piecing these together
+				if(g_bPieceTogether)
+				{
+					if(iNum == 0)	//First one tells us where to start searching backwards from
+					{
+						startPos = i;
+						cout << "Setting starting pos to " << startPos << endl;
+						cout << "Start - sizeof(texheader) " << startPos - sizeof(texHeader) << endl;
+					}
+					for(int k = startPos - sizeof(texHeader) - sizeof(FrameDesc); k > 0; k --)
+					{
+						//piece p;
+						//memcpy(&p, &(dataIn[k]), sizeof(piece));
+						//if(p.topLeftUV.x >= -10 && p.topLeftUV.x <= 10 &&
+						//	p.bottomRightUV.x >= -10 && p.bottomRightUV.x <= 10 &&
+						//	p.bottomRight.x >= 0 && p.bottomRight.x <= th.width &&
+						//	p.bottomRight.y >= 0 && p.bottomRight.y <= th.height
+						//)
+						//	cout << "Piece found: " << p.topLeft.x << ", " << p.topLeft.y  << ", "
+						//		<< p.topLeftUV.x  << ", " << p.topLeftUV.y << ", " 
+						//		<< p.bottomRight.x << ", " << p.bottomRight.y << ", "
+						//		<< p.bottomRightUV.x  << ", " << p.bottomRightUV.y << endl;
+						memcpy(&fd, &(dataIn[k]), sizeof(FrameDesc));
+						//fd.texOffset = byteswap(fd.texOffset);
+						if(abs((int32_t)fd.texOffset - (int32_t)headerPos) == 24)
+							cout << ((int32_t)fd.texOffset - (int32_t)headerPos) << endl;
+						if(fd.texOffset != headerPos + 24) continue;
+						//Sanity check
+						if(fd.texDataSize > MAGIC_TEX_TOOBIG) continue;
+						if(fd.texOffset == 0 || fd.pieceOffset < 24 || fd.pieceOffset + sizeof(PiecesDesc) > fileSize) continue;
+						
+						//Ok, found our header. Grab pieces
+						cout << "Found header" << endl;
+						pieces.clear();
+						PiecesDesc pd;
+						fd.pieceOffset -= 24;
+						cout << "Piece offset: " << fd.pieceOffset << " , data size: " << fileSize << endl;
+						memcpy(&pd, &(dataIn[fd.pieceOffset]), sizeof(PiecesDesc));
+						cout << "Pieces: " << pd.numPieces << endl;
+						if(pd.numPieces < 0 || pd.numPieces > MAGIC_TOOMANYPIECES) continue;
+						//continue;
+						maxul.x = maxul.y = maxbr.x = maxbr.y = 0;
+						for(int32_t j = 0; j < pd.numPieces; j++)
+						{
+							piece p;
+							memcpy(&p, &(dataIn[fd.pieceOffset+j*sizeof(piece)+sizeof(PiecesDesc)]), sizeof(piece));
+							//Store our maximum values, so we know how large the image is
+							if(p.topLeft.x < maxul.x)
+								maxul.x = p.topLeft.x;
+							if(p.topLeft.y > maxul.y)
+								maxul.y = p.topLeft.y;
+							if(p.bottomRight.x > maxbr.x)
+								maxbr.x = p.bottomRight.x;
+							if(p.bottomRight.y < maxbr.y)
+								maxbr.y = p.bottomRight.y;
+							pieces.push_back(p);
+						}
+						break;	//Got framedesc properly
+					}
+				}
 				continue;	//Skip LZC chunked data info cause it causes these LZC functions to crash. We'll patch chunks together ourselves
 			}
 			
@@ -140,7 +365,7 @@ bool DecompressANB(string sFilename)
 				{
 					ostringstream oss;
 					oss << "./output/" << sName << '_' << ++iNum << ".png";
-					saveImage(dataOut, decomp_size, th.width, th.height, oss.str());
+					saveImage(dataOut, decomp_size, th.width, th.height, oss.str(), pieces, maxul, maxbr, th);
 					free(dataOut);
 				}
 				else	//A chunk; hang onto it
@@ -172,7 +397,7 @@ bool DecompressANB(string sFilename)
 						//Done. We can save the image
 						ostringstream oss;
 						oss << "./output/" << sName << '_' << ++iNum << ".png";
-						saveImage(finalimg, decomp_size, th.width, th.height, oss.str());
+						saveImage(finalimg, decomp_size, th.width, th.height, oss.str(), pieces, maxul, maxbr, th);
 						free(finalimg);
 					}
 				}
@@ -186,6 +411,9 @@ bool DecompressANB(string sFilename)
 
 int main(int argc, char** argv)
 {
+	g_bPieceTogether = true;
+	g_bAdd = false;
+	
 	if(argc < 2)
 	{
 		cout << "Usage: lzc_decrypt [file.anb]" << endl;

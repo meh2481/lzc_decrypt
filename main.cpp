@@ -1,3 +1,6 @@
+#ifdef _WIN32
+	#include <windows.h>
+#endif
 #include "LZC.h"
 #include <iostream>
 #include <string>
@@ -8,9 +11,6 @@
 #include <cmath>
 #include <sstream>
 #include "FreeImage.h"
-#ifdef _WIN32
-#include <windows.h>
-#endif
 using namespace std;
 
 bool g_bPieceTogether;
@@ -370,6 +370,8 @@ bool DecompressANB(string sFilename)
 int usage()
 {
 	cout << "Usage: lzc_decrypt [-add|-nopiece|-offset=x] file.anb" << endl;
+	cout << "Press any key to exit..." << endl;
+	cin.get();
 	return 1;
 }
 
@@ -416,7 +418,7 @@ int main(int argc, char** argv)
 	for(list<string>::iterator i = sFilenames.begin(); i != sFilenames.end(); i++)
 		DecompressANB((*i));
 	
-	cout << "Press any key to exit...";
+	cout << "Press any key to exit..." << endl;
 	cin.get();
 	return 0;
 }

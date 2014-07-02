@@ -69,7 +69,7 @@ typedef struct
 
 #define NUM_PALETTE_ENTRIES		256
 #define MAGIC_IMAGE_TOOWIDE		10000	//Yay! These numbers are magic!
-#define MAGIC_IMAGE_TOONARROW	16
+#define MAGIC_IMAGE_TOONARROW	5
 #define MAGIC_TEX_TOOBIG		6475888
 #define	MAGIC_TOOMANYPIECES		128
 
@@ -260,7 +260,9 @@ bool DecompressANB(string sFilename)
 			texHeader thTest;
 			headerPos = i - sizeof(texHeader);
 			memcpy(&thTest, &(dataIn[headerPos]), sizeof(texHeader));
-			if(thTest.width < MAGIC_IMAGE_TOOWIDE && thTest.width > MAGIC_IMAGE_TOONARROW)	//Sanity check to be sure this is a valid header
+			//cout << "Tex header: " << thTest.width << "," << thTest.height << endl;
+			if(thTest.width < MAGIC_IMAGE_TOOWIDE && thTest.width > MAGIC_IMAGE_TOONARROW &&
+				thTest.height < MAGIC_IMAGE_TOOWIDE && thTest.height > MAGIC_IMAGE_TOONARROW)	//Sanity check to be sure this is a valid header
 			{
 				//Save this
 				memcpy(&th, &thTest, sizeof(texHeader));
@@ -310,6 +312,7 @@ bool DecompressANB(string sFilename)
 			LZC_SIZE_T decomp_size = LZC_GetDecompressedSize(&(dataIn[i]));
 			if(decomp_size)	//Sanity check; if this is zero; something's gone wrong
 			{
+				//cout << "Decomp size: " << decomp_size << endl;
 				bool bChunk = false;	//If we need to read multiple chunks for this image
 				
 				if(decomp_size < th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry))	//Smaller than what we need; probably a chunk
@@ -369,25 +372,23 @@ bool DecompressANB(string sFilename)
 
 int usage()
 {
-	cout << "Usage: lzc_decrypt [-add|-nopiece|-offset=x] file.anb" << endl;
-	cout << "Press any key to exit..." << endl;
-	cin.get();
+	cout << "Usage: lzc_decrypt [-noadd|-nopiece|-offset=x] file.anb" << endl;
 	return 1;
 }
 
 int main(int argc, char** argv)
 {
 	g_bPieceTogether = true;
-	g_bAdd = false;
-	g_iOffset = 0;
+	g_bAdd = true;
+	g_iOffset = 24;
 	
 	list<string> sFilenames;
 	//Parse commandline
 	for(int i = 1; i < argc; i++)
 	{
 		string s = argv[i];
-		if(s == "-add")
-			g_bAdd = true;
+		if(s == "-noadd")
+			g_bAdd = false;
 		else if(s == "-nopiece")
 			g_bPieceTogether = false;
 		else if(s.find(".anb") != string::npos)
@@ -398,7 +399,7 @@ int main(int argc, char** argv)
 			s.erase(0, pos);
 			istringstream iss(s);
 			if(!(iss >> g_iOffset))
-				g_iOffset = 0;
+				g_iOffset = 24;
 		}
 		else
 			cout << "Unrecognized commandline argument " << s << endl;
@@ -418,8 +419,6 @@ int main(int argc, char** argv)
 	for(list<string>::iterator i = sFilenames.begin(); i != sFilenames.end(); i++)
 		DecompressANB((*i));
 	
-	cout << "Press any key to exit..." << endl;
-	cin.get();
 	return 0;
 }
 

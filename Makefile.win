@@ -1,5 +1,5 @@
 objects := main.o LZC.o
-libs := -L./lib/Win32 ./lib/Win32/FreeImage.lib
+libs := -L./lib/Win32 ./lib/Win32/FreeImage.lib -static-libgcc -static-libstdc++
 header := -I./ -I./include 
 CXX=g++
 output=lzc_decrypt

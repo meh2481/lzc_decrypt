@@ -1,0 +1,9 @@
+raven.anb images 169-175 
+rayne.anb images 586-588
+
+Segfaults:
+bullet_effects.anb
+rayne_crowparts.anb
+rayne_player_hud.anb
+rayne_raven_caw.anb
+raven_crowparts.anb

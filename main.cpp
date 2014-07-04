@@ -19,7 +19,7 @@ int32_t g_iOffset;
 
 typedef struct
 {
-	uint32_t unknown0;
+	uint32_t type;
 	uint32_t width;
 	uint32_t height;
 	uint32_t unknown1[5];
@@ -67,10 +67,14 @@ typedef struct
 	//piece[]
 } PiecesDesc;
 
+//Defined by the anb file format
+#define TYPE_256_COLOR			4
+#define TYPE_UNCOMPRESSED		2
+
 #define NUM_PALETTE_ENTRIES		256
 #define MAGIC_IMAGE_TOOWIDE		10000	//Yay! These numbers are magic!
-#define MAGIC_IMAGE_TOONARROW	4
-#define MAGIC_IMAGE_TOOSHORT	6
+#define MAGIC_IMAGE_TOONARROW	2
+#define MAGIC_IMAGE_TOOSHORT	2
 #define MAGIC_IMAGE_TOOTALL		10000
 #define MAGIC_TEX_TOOBIG		6475888
 #define	MAGIC_TOOMANYPIECES		512
@@ -172,37 +176,53 @@ FIBITMAP* PieceImage(uint8_t* imgData, list<piece> pieces, Vec2 maxul, Vec2 maxb
 }
 
 //Save the given image to an external file
-bool saveImage(uint8_t* data, uint32_t dataSz, uint32_t width, uint32_t height, string sFilename, list<piece> pieces, Vec2 maxul, Vec2 maxbr, texHeader th)
+bool saveImage(uint8_t* data, uint32_t dataSz, string sFilename, list<piece> pieces, Vec2 maxul, Vec2 maxbr, texHeader th)
 {
-	//Read in the image palette
-	vector<paletteEntry> palEntries;
-	uint8_t* cur_data_ptr = data;
-	for(uint32_t i = 0; i < NUM_PALETTE_ENTRIES; i++)
-	{
-		paletteEntry p;
-		p.r = *cur_data_ptr++;
-		p.g = *cur_data_ptr++;
-		p.b = *cur_data_ptr++;
-		p.a = *cur_data_ptr++;
-		palEntries.push_back(p);
-	}
-	
-	//Fill out our pixel data
 	vector<uint8_t> imgData;
-	for(uint32_t i = 0; i < width * height; i++)
+	uint8_t* cur_data_ptr = data;
+	if(th.type == TYPE_256_COLOR)
 	{
-		paletteEntry pixel = palEntries[*cur_data_ptr++];
-		imgData.push_back(pixel.r);
-		imgData.push_back(pixel.g);
-		imgData.push_back(pixel.b);
-		imgData.push_back(pixel.a);
+		//Read in the image palette
+		vector<paletteEntry> palEntries;
+		for(uint32_t i = 0; i < NUM_PALETTE_ENTRIES; i++)
+		{
+			paletteEntry p;
+			p.r = *cur_data_ptr++;
+			p.g = *cur_data_ptr++;
+			p.b = *cur_data_ptr++;
+			p.a = *cur_data_ptr++;
+			palEntries.push_back(p);
+		}
+		
+		//Fill out our pixel data
+		for(uint32_t i = 0; i < th.width * th.height; i++)
+		{
+			paletteEntry pixel = palEntries[*cur_data_ptr++];
+			imgData.push_back(pixel.r);
+			imgData.push_back(pixel.g);
+			imgData.push_back(pixel.b);
+			imgData.push_back(pixel.a);
+		}
 	}
+	else if(th.type == TYPE_UNCOMPRESSED)
+	{
+		//Assume uncompressed
+		for(uint32_t i = 0; i < th.width * th.height; i++)
+		{
+			imgData.push_back(*cur_data_ptr++);
+			imgData.push_back(*cur_data_ptr++);
+			imgData.push_back(*cur_data_ptr++);
+			imgData.push_back(*cur_data_ptr++);
+		}
+	}
+	else
+		cout << "Warning: Unknown image type: " << th.type << endl;
 	
 	FIBITMAP* bmp;
 	if(pieces.size())	//If we're patching pieces together (if g_bPieceTogether == true)
 		bmp = PieceImage(imgData.data(), pieces, maxul, maxbr, th, g_bAdd);
 	else
-		bmp = FreeImage_ConvertFromRawBits(imgData.data(), width, height, width * 4, 32, 0x0000FF, 0x00FF00, 0xFF0000, true);
+		bmp = FreeImage_ConvertFromRawBits(imgData.data(), th.width, th.height, th.width * 4, 32, 0x0000FF, 0x00FF00, 0xFF0000, true);
 	
 	if(!bmp) return false;
 	//Save image as PNG
@@ -265,9 +285,10 @@ bool DecompressANB(string sFilename)
 			//cout << "Tex header: " << thTest.width << "," << thTest.height << endl;
 			if(thTest.width < MAGIC_IMAGE_TOOWIDE && thTest.width > MAGIC_IMAGE_TOONARROW &&
 				thTest.height < MAGIC_IMAGE_TOOTALL && thTest.height > MAGIC_IMAGE_TOOSHORT &&
-				thTest.width * thTest.height < MAGIC_TEX_TOOBIG)	//Sanity check to be sure this is a valid header
+				thTest.width * thTest.height < MAGIC_TEX_TOOBIG &&
+				!vMultiChunkData.size())	//Sanity check to be sure this is a valid header
 			{
-				cout << "Tex header type: " << thTest.unknown0 << endl;
+				//cout << "Tex header type: " << thTest.type << endl;
 				
 				//Save this
 				memcpy(&th, &thTest, sizeof(texHeader));
@@ -320,15 +341,23 @@ bool DecompressANB(string sFilename)
 			{
 				bool bChunk = false;	//If we need to read multiple chunks for this image
 				
-				if(decomp_size < th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry))	//Smaller than what we need; probably a chunk
+				LZC_SIZE_T size_needed = 0;
+				if(th.type == TYPE_256_COLOR)
+					size_needed = th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry);
+				else if(th.type == TYPE_UNCOMPRESSED)
+					size_needed = th.width * th.height * 4;
+				else
+					cout << "Warning: Unknown texture header type: " << th.type << endl;
+				
+				if(decomp_size < size_needed)	//Smaller than what we need; probably a chunk
 					bChunk = true;	//Save this chunk for later
 				
 				//Larger than we'll possibly need; ignore
-				if(decomp_size > th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry)) continue;
+				if(decomp_size > size_needed) continue;
 					
 				//Decompress the data
-				cout << "Decomp size: " << decomp_size << endl;
-				cout << "Need: " << th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry) << endl;
+				//cout << "Decomp size: " << decomp_size << endl;
+				//cout << "Need: " << size_needed << endl;
 				uint8_t* dataOut = (uint8_t*)malloc(decomp_size);
 				LZC_Decompress(&(dataIn[i]), dataOut);
 				
@@ -336,7 +365,7 @@ bool DecompressANB(string sFilename)
 				{
 					ostringstream oss;
 					oss << "./output/" << sName << '_' << ++iNum << ".png";
-					saveImage(dataOut, decomp_size, th.width, th.height, oss.str(), pieces, maxul, maxbr, th);
+					saveImage(dataOut, decomp_size, oss.str(), pieces, maxul, maxbr, th);
 					free(dataOut);
 				}
 				else	//A chunk; hang onto it
@@ -345,7 +374,7 @@ bool DecompressANB(string sFilename)
 					for(vector<chunk>::iterator it = vMultiChunkData.begin(); it != vMultiChunkData.end(); it++)
 						totalSz += it->size;	//How far along are we?
 					
-					if(totalSz > th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry))	//Too much; discard
+					if(totalSz > size_needed)	//Too much; discard
 						continue;
 					
 					chunk c;
@@ -353,8 +382,8 @@ bool DecompressANB(string sFilename)
 					c.size = decomp_size;
 					vMultiChunkData.push_back(c);
 					
-					cout << "Have: " << totalSz << endl;
-					if(totalSz >= th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry))	//If we've got all the chunks we need, patch it together!
+					//cout << "Have: " << totalSz << endl;
+					if(totalSz >= size_needed)	//If we've got all the chunks we need, patch it together!
 					{
 						uint8_t* finalimg = (uint8_t*)malloc(totalSz);
 						uint32_t curCopyPos = 0;
@@ -367,17 +396,17 @@ bool DecompressANB(string sFilename)
 						vMultiChunkData.clear();	//Clear this all out cause we're done with it
 						
 						//If we've got too MUCH data now, spit out a warning and attempt to continue
-						//if(totalSz != th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry))
+						//if(totalSz != size_needed)
 						//{
 						//	cout << "Warning: LZC chunk size mismatch in file " << sFilename << " image " << iNum+1 << ". Got " 
-						//		<< totalSz << " bytes, expected " << th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry) << endl;
+						//		<< totalSz << " bytes, expected " << size_needed << endl;
 							//continue;	//Skip dis
 						//}
 						
 						//Done. We can save the image
 						ostringstream oss;
 						oss << "./output/" << sName << '_' << ++iNum << ".png";
-						saveImage(finalimg, decomp_size, th.width, th.height, oss.str(), pieces, maxul, maxbr, th);
+						saveImage(finalimg, decomp_size, oss.str(), pieces, maxul, maxbr, th);
 						free(finalimg);
 					}
 				}

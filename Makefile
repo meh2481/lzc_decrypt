@@ -9,7 +9,7 @@ ifeq ($(BUILD),release)
 	CXXFLAGS += -O2 -Os -s -DNDEBUG 
 else
 # "Debug" build - no optimization, and debugging symbols
-	CXXFLAGS += -g -ggdb -DDEBUG -pg
+	CXXFLAGS += -g -ggdb -DDEBUG
 endif
 
 all: lzc_decrypt

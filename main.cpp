@@ -69,9 +69,11 @@ typedef struct
 
 #define NUM_PALETTE_ENTRIES		256
 #define MAGIC_IMAGE_TOOWIDE		10000	//Yay! These numbers are magic!
-#define MAGIC_IMAGE_TOONARROW	5
+#define MAGIC_IMAGE_TOONARROW	4
+#define MAGIC_IMAGE_TOOSHORT	6
+#define MAGIC_IMAGE_TOOTALL		10000
 #define MAGIC_TEX_TOOBIG		6475888
-#define	MAGIC_TOOMANYPIECES		128
+#define	MAGIC_TOOMANYPIECES		512
 
 FIBITMAP* imageFromPixels(uint8_t* imgData, uint32_t width, uint32_t height)
 {
@@ -262,8 +264,11 @@ bool DecompressANB(string sFilename)
 			memcpy(&thTest, &(dataIn[headerPos]), sizeof(texHeader));
 			//cout << "Tex header: " << thTest.width << "," << thTest.height << endl;
 			if(thTest.width < MAGIC_IMAGE_TOOWIDE && thTest.width > MAGIC_IMAGE_TOONARROW &&
-				thTest.height < MAGIC_IMAGE_TOOWIDE && thTest.height > MAGIC_IMAGE_TOONARROW)	//Sanity check to be sure this is a valid header
+				thTest.height < MAGIC_IMAGE_TOOTALL && thTest.height > MAGIC_IMAGE_TOOSHORT &&
+				thTest.width * thTest.height < MAGIC_TEX_TOOBIG)	//Sanity check to be sure this is a valid header
 			{
+				cout << "Tex header type: " << thTest.unknown0 << endl;
+				
 				//Save this
 				memcpy(&th, &thTest, sizeof(texHeader));
 					
@@ -285,6 +290,7 @@ bool DecompressANB(string sFilename)
 						PiecesDesc pd;
 						fd.pieceOffset -= g_iOffset;
 						memcpy(&pd, &(dataIn[fd.pieceOffset]), sizeof(PiecesDesc));
+						//cout << "Numpieces: " << pd.numPieces << endl;
 						if(pd.numPieces < 0 || pd.numPieces > MAGIC_TOOMANYPIECES) continue;
 						maxul.x = maxul.y = maxbr.x = maxbr.y = 0;
 						for(int32_t j = 0; j < pd.numPieces; j++)
@@ -312,13 +318,17 @@ bool DecompressANB(string sFilename)
 			LZC_SIZE_T decomp_size = LZC_GetDecompressedSize(&(dataIn[i]));
 			if(decomp_size)	//Sanity check; if this is zero; something's gone wrong
 			{
-				//cout << "Decomp size: " << decomp_size << endl;
 				bool bChunk = false;	//If we need to read multiple chunks for this image
 				
 				if(decomp_size < th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry))	//Smaller than what we need; probably a chunk
 					bChunk = true;	//Save this chunk for later
+				
+				//Larger than we'll possibly need; ignore
+				if(decomp_size > th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry)) continue;
 					
 				//Decompress the data
+				cout << "Decomp size: " << decomp_size << endl;
+				cout << "Need: " << th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry) << endl;
 				uint8_t* dataOut = (uint8_t*)malloc(decomp_size);
 				LZC_Decompress(&(dataIn[i]), dataOut);
 				
@@ -331,13 +341,19 @@ bool DecompressANB(string sFilename)
 				}
 				else	//A chunk; hang onto it
 				{
+					uint32_t totalSz = decomp_size;
+					for(vector<chunk>::iterator it = vMultiChunkData.begin(); it != vMultiChunkData.end(); it++)
+						totalSz += it->size;	//How far along are we?
+					
+					if(totalSz > th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry))	//Too much; discard
+						continue;
+					
 					chunk c;
 					c.data = dataOut;
 					c.size = decomp_size;
 					vMultiChunkData.push_back(c);
-					uint32_t totalSz = 0;
-					for(vector<chunk>::iterator it = vMultiChunkData.begin(); it != vMultiChunkData.end(); it++)
-						totalSz += it->size;	//How far along are we?
+					
+					cout << "Have: " << totalSz << endl;
 					if(totalSz >= th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry))	//If we've got all the chunks we need, patch it together!
 					{
 						uint8_t* finalimg = (uint8_t*)malloc(totalSz);
@@ -351,9 +367,12 @@ bool DecompressANB(string sFilename)
 						vMultiChunkData.clear();	//Clear this all out cause we're done with it
 						
 						//If we've got too MUCH data now, spit out a warning and attempt to continue
-						if(totalSz != th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry))
-							cout << "Warning: LZC chunk size mismatch in file " << sFilename << " image " << iNum+1 << ". Got " 
-								<< totalSz << " bytes, expected " << th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry) << endl;
+						//if(totalSz != th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry))
+						//{
+						//	cout << "Warning: LZC chunk size mismatch in file " << sFilename << " image " << iNum+1 << ". Got " 
+						//		<< totalSz << " bytes, expected " << th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry) << endl;
+							//continue;	//Skip dis
+						//}
 						
 						//Done. We can save the image
 						ostringstream oss;

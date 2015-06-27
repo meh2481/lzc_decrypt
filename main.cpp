@@ -14,6 +14,10 @@
 using namespace std;
 
 bool g_bPieceTogether;
+bool g_bNoSheet;
+
+int offsetX = 1;
+int offsetY = 2;
 
 typedef struct
 {
@@ -192,7 +196,7 @@ FIBITMAP* PieceImage(uint8_t* imgData, list<piece> pieces, Vec2 maxul, Vec2 maxb
 }
 
 //Save the given image to an external file
-bool saveImage(uint8_t* data, uint32_t dataSz, string sFilename, list<piece> pieces, Vec2 maxul, Vec2 maxbr, texHeader th)
+FIBITMAP* createImage(uint8_t* data, uint32_t dataSz, list<piece> pieces, Vec2 maxul, Vec2 maxbr, texHeader th)
 {
 	vector<uint8_t> imgData;
 	uint8_t* cur_data_ptr = data;
@@ -240,12 +244,7 @@ bool saveImage(uint8_t* data, uint32_t dataSz, string sFilename, list<piece> pie
 	else
 		bmp = FreeImage_ConvertFromRawBits(imgData.data(), th.width, th.height, th.width * 4, 32, 0x0000FF, 0x00FF00, 0xFF0000, true);
 	
-	if(!bmp) return false;
-	//Save image as PNG
-	cout << "Saving image " << sFilename << endl;
-	bool bRet = FreeImage_Save(FIF_PNG, bmp, sFilename.c_str());
-	FreeImage_Unload(bmp);
-	return bRet;
+	return bmp;
 }
 
 bool DecompressANB(string sFilename)
@@ -292,10 +291,6 @@ bool DecompressANB(string sFilename)
 		memcpy(&lp, &dataIn[ah.frameListPtr+i*sizeof(listPtr)], sizeof(listPtr));
 		memcpy(&fd, &dataIn[lp.offset], sizeof(FrameDesc));
 		
-		//TODO if minx > 0 or maxy < 0, horizontal or vertical offsets
-		
-		//cout << fd.minx << ", "  << fd.maxx << ", "  << fd.miny << ", "  << fd.maxy << endl;
-		
 		vFrames.push_back(fd);
 	}
 	
@@ -311,26 +306,30 @@ bool DecompressANB(string sFilename)
 		
 		list<piece> lp;
 		
-		extents e;
-		e.maxul.x = e.maxul.y = e.maxbr.x = e.maxbr.y = 0;
-		for(int j = 0; j < pd.numPieces; j++)
+		if(g_bPieceTogether)
 		{
-			piece p;
-			memcpy(&p, &dataIn[vFrames[i].pieceOffset + sizeof(PiecesDesc) + j * sizeof(piece)], sizeof(piece));
-			
-			if(p.topLeft.x < e.maxul.x)
-				e.maxul.x = p.topLeft.x;
-			if(p.topLeft.y > e.maxul.y)
-				e.maxul.y = p.topLeft.y;
-			if(p.bottomRight.x > e.maxbr.x)
-				e.maxbr.x = p.bottomRight.x;
-			if(p.bottomRight.y < e.maxbr.y)
-				e.maxbr.y = p.bottomRight.y;
-			
-			lp.push_back(p);
+			extents e;
+			e.maxul.x = e.maxul.y = e.maxbr.x = e.maxbr.y = 0;
+			for(int j = 0; j < pd.numPieces; j++)
+			{
+				piece p;
+				memcpy(&p, &dataIn[vFrames[i].pieceOffset + sizeof(PiecesDesc) + j * sizeof(piece)], sizeof(piece));
+				
+				//Store maximum extents for this piece (rather than trusting the fields in FrameDesc, because those seem to sometimes be offsets)
+				if(p.topLeft.x < e.maxul.x)
+					e.maxul.x = p.topLeft.x;
+				if(p.topLeft.y > e.maxul.y)
+					e.maxul.y = p.topLeft.y;
+				if(p.bottomRight.x > e.maxbr.x)
+					e.maxbr.x = p.bottomRight.x;
+				if(p.bottomRight.y < e.maxbr.y)
+					e.maxbr.y = p.bottomRight.y;
+				
+				lp.push_back(p);
+			}
+			frameExtents.push_back(e);
 		}
 		pieces.push_back(lp);
-		frameExtents.push_back(e);
 	}
 	
 	//Save animation frames
@@ -450,29 +449,82 @@ bool DecompressANB(string sFilename)
 		imageData.push_back(c);
 	}
 	
-	//Supposedly this should be all the image data; let's test
-	for(int i = 0; i < vAnims.size(); i++)
+	//If we shouldn't sheet this, stop here and output
+	if(g_bNoSheet)
 	{
-		int iCurImg = 0;
-		for(vector<uint32_t>::iterator j = vAnims[i].begin(); j != vAnims[i].end(); j++)
+		for(int i = 0; i < vAnims.size(); i++)
 		{
-			ostringstream oss;
-			oss << "./output/" << sName << i << '_' << ++iCurImg << ".png";
-			saveImage(imageData[*j].data, imageData[*j].size, oss.str(), pieces[*j], animExtents[i].maxul, animExtents[i].maxbr, texHead[*j]);
+			int iCurImg = 0;
+			for(vector<uint32_t>::iterator j = vAnims[i].begin(); j != vAnims[i].end(); j++)
+			{
+				ostringstream oss;
+				oss << "./output/" << sName << i << '_' << ++iCurImg << ".png";
+				cout << "Saving image " << oss.str().c_str() << endl;
+				FIBITMAP* bmp = createImage(imageData[*j].data, imageData[*j].size, pieces[*j], animExtents[i].maxul, animExtents[i].maxbr, texHead[*j]);
+				FreeImage_Save(FIF_PNG, bmp, oss.str().c_str());
+			}
 		}
 	}
+	else	//Generate spritesheet out of this
+	{
+		//Figure out dimensions of final image
+		int finalX = offsetX;
+		int finalY = offsetY;
+		
+		for(int i = 0; i < animExtents.size(); i++)
+		{
+			int animExtentX = (animExtents[i].maxbr.x - animExtents[i].maxul.x + offsetX) * vAnims[i].size() + offsetX;
+			if(animExtentX > finalX)
+				finalX = animExtentX;
+				
+			finalY += (animExtents[i].maxul.y - animExtents[i].maxbr.y + offsetY);
+		}
+		
+		//Allocate final image, and piece
+		FIBITMAP* finalSheet = FreeImage_Allocate(finalX, finalY, 32);
+		RGBQUAD q = {128,128,0,255};
+		FreeImage_FillBackground(finalSheet, (const void *)&q);
+		
+		int curX = offsetX;
+		int curY = offsetY/2;
+		for(int i = 0; i < vAnims.size(); i++)
+		{
+			curX = offsetX;
+			for(vector<uint32_t>::iterator j = vAnims[i].begin(); j != vAnims[i].end(); j++)
+			{
+				FIBITMAP* bmp = createImage(imageData[*j].data, imageData[*j].size, pieces[*j], animExtents[i].maxul, animExtents[i].maxbr, texHead[*j]);
+				
+				FreeImage_Paste(finalSheet, bmp, curX, curY, 300);
+				curX += offsetX + FreeImage_GetWidth(bmp);
+				FreeImage_Unload(bmp);
+			}
+			curY += (animExtents[i].maxul.y - animExtents[i].maxbr.y + offsetY);
+		}
+		
+		ostringstream oss;
+		oss << "./output/" << sName << ".png";
+		cout << "Saving image " << oss.str().c_str() << endl;
+		FreeImage_Save(FIF_PNG, finalSheet, oss.str().c_str());
+		
+		FreeImage_Unload(finalSheet);
+	}
+	
+	//Clean up memory
+	for(int i = 0; i < ah.numFrames; i++)
+		free(imageData[i].data);
 	
 	free(dataIn);
 }
 
 int usage()
 {
-	cout << "Usage: lzc_decrypt [-nopiece] file.anb" << endl;
+	cout << "Usage: lzc_decrypt [-nopiece|-nosheet] file.anb" << endl;
 	return 1;
 }
 
 int main(int argc, char** argv)
 {
+	g_bNoSheet = false;
 	g_bPieceTogether = true;
 	
 	list<string> sFilenames;
@@ -480,7 +532,9 @@ int main(int argc, char** argv)
 	for(int i = 1; i < argc; i++)
 	{
 		string s = argv[i];
-		if(s == "-nopiece")
+		if(s == "-nosheet")
+			g_bNoSheet = true;
+		else if(s == "-nopiece")
 			g_bPieceTogether = false;
 		else if(s.find(".anb") != string::npos)
 			sFilenames.push_back(s);

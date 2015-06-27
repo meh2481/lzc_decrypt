@@ -357,6 +357,28 @@ bool DecompressANB(string sFilename)
 		vAnims.push_back(vAnimFrames);
 	}
 	
+	//Save animation extents (maximum of each frame extent)
+	vector<extents> animExtents;
+	animExtents.reserve(ah.numAnimations);
+	for(int i = 0; i < ah.numAnimations; i++)
+	{
+		extents e;
+		e.maxul.x = e.maxul.y = e.maxbr.x = e.maxbr.y = 0;
+		
+		for(vector<uint32_t>::iterator j = vAnims[i].begin(); j != vAnims[i].end(); j++)
+		{
+			if(frameExtents[*j].maxul.x < e.maxul.x)
+				e.maxul.x = frameExtents[*j].maxul.x;
+			if(frameExtents[*j].maxul.y > e.maxul.y)
+				e.maxul.y = frameExtents[*j].maxul.y;
+			if(frameExtents[*j].maxbr.x > e.maxbr.x)
+				e.maxbr.x = frameExtents[*j].maxbr.x;
+			if(frameExtents[*j].maxbr.y < e.maxbr.y)
+				e.maxbr.y = frameExtents[*j].maxbr.y;
+		}
+		animExtents.push_back(e);
+	}
+	
 	//Decompress image data
 	vector<chunk> imageData;
 	vector<texHeader> texHead;
@@ -436,163 +458,10 @@ bool DecompressANB(string sFilename)
 		{
 			ostringstream oss;
 			oss << "./output/" << sName << i << '_' << ++iCurImg << ".png";
-			saveImage(imageData[*j].data, imageData[*j].size, oss.str(), pieces[*j], frameExtents[*j].maxul, frameExtents[*j].maxbr, texHead[*j]);
+			saveImage(imageData[*j].data, imageData[*j].size, oss.str(), pieces[*j], animExtents[i].maxul, animExtents[i].maxbr, texHead[*j]);
 		}
 	}
 	
-	//Spin through the file and try to find LZC-compressed images
-	/*int iNum = 0;
-	bool bTexHeader = true;
-	texHeader th;
-	FrameDesc fd;
-	int32_t headerPos;
-	int32_t startPos = 0;
-	vector<chunk> vMultiChunkData;	//If an image is compressed over multiple chunks, hang onto previous ones and attempt to reconstruct it
-	Vec2 maxul;
-	Vec2 maxbr;
-	maxul.x = maxul.y = maxbr.x = maxbr.y = 0;
-	list<piece> pieces;
-	for(int32_t i = 0; i < fileSize; i++)	//Definitely not the fastest way to do it... but I don't care
-	{
-		if(memcmp(&(dataIn[i]), "LZC", 3) == 0)	//Found another LZC header
-		{
-			//Check and see if there's a texture header here. If so, skip the LZC stuff, cause that's multichunk-LZC stuff our LZC decompressor can't handle
-			texHeader thTest;
-			headerPos = i - sizeof(texHeader);
-			memcpy(&thTest, &(dataIn[headerPos]), sizeof(texHeader));
-			//cout << "Tex header: " << thTest.width << "," << thTest.height << endl;
-			if(thTest.width < MAGIC_IMAGE_TOOWIDE && thTest.width > MAGIC_IMAGE_TOONARROW &&
-				thTest.height < MAGIC_IMAGE_TOOTALL && thTest.height > MAGIC_IMAGE_TOOSHORT &&
-				thTest.width * thTest.height < MAGIC_TEX_TOOBIG &&
-				!vMultiChunkData.size())	//Sanity check to be sure this is a valid header
-			{
-				//cout << "Tex header type: " << thTest.type << endl;
-				
-				//Save this
-				memcpy(&th, &thTest, sizeof(texHeader));
-					
-				//Search for frame header if we're going to be piecing these together
-				if(g_bPieceTogether)
-				{
-					if(iNum == 0)	//First one tells us where to start searching backwards from
-						startPos = i;
-					for(int k = startPos - sizeof(texHeader) - sizeof(FrameDesc); k > 0; k --)
-					{
-						memcpy(&fd, &(dataIn[k]), sizeof(FrameDesc));
-						if(fd.texOffset != headerPos) continue;
-						//Sanity check
-						if(fd.texDataSize > MAGIC_TEX_TOOBIG) continue;
-						if(fd.texOffset == 0 || fd.pieceOffset + sizeof(PiecesDesc) > fileSize) continue;
-						
-						//Ok, found our header. Grab pieces
-						pieces.clear();
-						PiecesDesc pd;
-						//fd.pieceOffset -= g_iOffset;
-						memcpy(&pd, &(dataIn[fd.pieceOffset]), sizeof(PiecesDesc));
-						//cout << "Numpieces: " << pd.numPieces << endl;
-						if(pd.numPieces < 0 || pd.numPieces > MAGIC_TOOMANYPIECES) continue;
-						maxul.x = maxul.y = maxbr.x = maxbr.y = 0;
-						for(int32_t j = 0; j < pd.numPieces; j++)
-						{
-							piece p;
-							memcpy(&p, &(dataIn[fd.pieceOffset+j*sizeof(piece)+sizeof(PiecesDesc)]), sizeof(piece));
-							//Store our maximum values, so we know how large the image is
-							if(p.topLeft.x < maxul.x)
-								maxul.x = p.topLeft.x;
-							if(p.topLeft.y > maxul.y)
-								maxul.y = p.topLeft.y;
-							if(p.bottomRight.x > maxbr.x)
-								maxbr.x = p.bottomRight.x;
-							if(p.bottomRight.y < maxbr.y)
-								maxbr.y = p.bottomRight.y;
-							pieces.push_back(p);
-						}
-						break;	//Got framedesc properly
-					}
-				}
-				continue;	//Skip LZC chunked data info cause it causes these LZC functions to crash. We'll patch chunks together ourselves
-			}
-			
-			//Alright, we've got another LZC chunk
-			LZC_SIZE_T decomp_size = LZC_GetDecompressedSize(&(dataIn[i]));
-			if(decomp_size)	//Sanity check; if this is zero; something's gone wrong
-			{
-				bool bChunk = false;	//If we need to read multiple chunks for this image
-				
-				LZC_SIZE_T size_needed = 0;
-				if(th.type == TYPE_256_COLOR)
-					size_needed = th.width * th.height + NUM_PALETTE_ENTRIES * sizeof(paletteEntry);
-				else if(th.type == TYPE_UNCOMPRESSED)
-					size_needed = th.width * th.height * 4;
-				else
-					cout << "Warning: Unknown texture header type: " << th.type << endl;
-				
-				if(decomp_size < size_needed)	//Smaller than what we need; probably a chunk
-					bChunk = true;	//Save this chunk for later
-				
-				//Larger than we'll possibly need; ignore
-				if(decomp_size > size_needed) continue;
-					
-				//Decompress the data
-				//cout << "Decomp size: " << decomp_size << endl;
-				//cout << "Need: " << size_needed << endl;
-				uint8_t* dataOut = (uint8_t*)malloc(decomp_size);
-				LZC_Decompress(&(dataIn[i]), dataOut);
-				
-				if(!bChunk)	//One full image; go ahead and save it
-				{
-					ostringstream oss;
-					oss << "./output/" << sName << '_' << ++iNum << ".png";
-					saveImage(dataOut, decomp_size, oss.str(), pieces, maxul, maxbr, th);
-					free(dataOut);
-				}
-				else	//A chunk; hang onto it
-				{
-					uint32_t totalSz = decomp_size;
-					for(vector<chunk>::iterator it = vMultiChunkData.begin(); it != vMultiChunkData.end(); it++)
-						totalSz += it->size;	//How far along are we?
-					
-					if(totalSz > size_needed)	//Too much; discard
-						continue;
-					
-					chunk c;
-					c.data = dataOut;
-					c.size = decomp_size;
-					vMultiChunkData.push_back(c);
-					
-					//cout << "Have: " << totalSz << endl;
-					if(totalSz >= size_needed)	//If we've got all the chunks we need, patch it together!
-					{
-						uint8_t* finalimg = (uint8_t*)malloc(totalSz);
-						uint32_t curCopyPos = 0;
-						for(vector<chunk>::iterator it = vMultiChunkData.begin(); it != vMultiChunkData.end(); it++)
-						{
-							memcpy(finalimg + curCopyPos, it->data, it->size);
-							curCopyPos += it->size;
-							free(it->data);	//Done with this memory
-						}
-						vMultiChunkData.clear();	//Clear this all out cause we're done with it
-						
-						//If we've got too MUCH data now, spit out a warning and attempt to continue
-						//if(totalSz != size_needed)
-						//{
-						//	cout << "Warning: LZC chunk size mismatch in file " << sFilename << " image " << iNum+1 << ". Got " 
-						//		<< totalSz << " bytes, expected " << size_needed << endl;
-							//continue;	//Skip dis
-						//}
-						
-						//Done. We can save the image
-						ostringstream oss;
-						oss << "./output/" << sName << '_' << ++iNum << ".png";
-						saveImage(finalimg, decomp_size, oss.str(), pieces, maxul, maxbr, th);
-						free(finalimg);
-					}
-				}
-			}
-			else
-				cerr << "ERR decompressing image " << iNum << endl;
-		}
-	}*/
 	free(dataIn);
 }
 

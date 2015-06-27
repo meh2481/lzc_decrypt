@@ -63,12 +63,6 @@ typedef struct
 	uint8_t a;
 } paletteEntry;
 
-typedef struct
-{
-	uint8_t* data;
-	uint32_t size;
-} chunk;
-
 typedef struct  
 {
 	float    minx;
@@ -99,6 +93,21 @@ typedef struct
 	int32_t numPieces;
 	//piece[]	//followed by numPieces pieces
 } PiecesDesc;
+
+
+//For helping reconstruct data from LZC chunks
+typedef struct
+{
+	uint8_t* data;
+	uint32_t size;
+} chunk;
+
+//For helping piece animations together at the same size
+typedef struct
+{
+	Vec2 maxul;
+	Vec2 maxbr;
+} extents;
 
 //Defined by the anb file format
 #define TYPE_256_COLOR			4
@@ -290,6 +299,40 @@ bool DecompressANB(string sFilename)
 		vFrames.push_back(fd);
 	}
 	
+	//Save pieces
+	vector<list<piece> > pieces;
+	vector<extents> frameExtents;
+	pieces.reserve(ah.numFrames);
+	frameExtents.reserve(ah.numFrames);
+	for(int i = 0; i < ah.numFrames; i++)
+	{
+		PiecesDesc pd;
+		memcpy(&pd, &dataIn[vFrames[i].pieceOffset], sizeof(PiecesDesc));
+		
+		list<piece> lp;
+		
+		extents e;
+		e.maxul.x = e.maxul.y = e.maxbr.x = e.maxbr.y = 0;
+		for(int j = 0; j < pd.numPieces; j++)
+		{
+			piece p;
+			memcpy(&p, &dataIn[vFrames[i].pieceOffset + sizeof(PiecesDesc) + j * sizeof(piece)], sizeof(piece));
+			
+			if(p.topLeft.x < e.maxul.x)
+				e.maxul.x = p.topLeft.x;
+			if(p.topLeft.y > e.maxul.y)
+				e.maxul.y = p.topLeft.y;
+			if(p.bottomRight.x > e.maxbr.x)
+				e.maxbr.x = p.bottomRight.x;
+			if(p.bottomRight.y < e.maxbr.y)
+				e.maxbr.y = p.bottomRight.y;
+			
+			lp.push_back(p);
+		}
+		pieces.push_back(lp);
+		frameExtents.push_back(e);
+	}
+	
 	//Save animation frames
 	vector<vector<uint32_t> > vAnims;
 	vAnims.reserve(ah.numAnimations);
@@ -317,9 +360,10 @@ bool DecompressANB(string sFilename)
 	//Decompress image data
 	vector<chunk> imageData;
 	vector<texHeader> texHead;
+	imageData.reserve(ah.numFrames);
+	texHead.reserve(ah.numFrames);
 	for(int i = 0; i < ah.numFrames; i++)
 	{
-		//cout << "Frame: " << i << endl;
 		uint32_t curPtr = vFrames[i].texOffset;
 		
 		texHeader th;
@@ -327,51 +371,40 @@ bool DecompressANB(string sFilename)
 		curPtr += sizeof(texHeader);
 		texHead.push_back(th);
 		
-		//Skip over first LZC header; patch chunks together ourselves
+		//Skip over first LZC header; patch chunks together ourselves (probably set up similarly to WFLZ, but I don't care much)
 		LZC_Header lzch;
 		memcpy(&lzch, &dataIn[curPtr], sizeof(LZC_Header));
-		curPtr++;	//Skip this header
-		//cout << lzch.decompressedSize << " , " << lzch.compressedSize << endl;
+		curPtr += lzch.compressedSize;	//Skip this header
 		
-		uint32_t curCompSize = 0;//sizeof(texHeader) + FIRST_LZC_CHUNK_SZ;
+		uint32_t curDecompSize = 0;
 		vector<uint8_t*> pixelData;
 		vector<LZC_SIZE_T> dataSz;
 		//Decompress loop
 		LZC_SIZE_T size_needed = lzch.decompressedSize;
-		while(curCompSize < size_needed)
+		while(curDecompSize < size_needed)
 		{
 			while(true)
 			{
 				//Read forward until we find another LZC header...
 				if(memcmp(&(dataIn[curPtr]), "LZC", 3) == 0)
-				{
-					//LZC_Header lzch2;
-					//memcpy(&lzch2, &dataIn[curPtr], sizeof(LZC_Header));
-					//curPtr += FIRST_LZC_CHUNK_SZ;
-					//cout << "2: " << lzch2.decompressedSize << " , " << lzch2.compressedSize << endl;
 					break;
-				}
-					
-				//curCompSize++;
-				curPtr++;
+				curPtr++; //Search for next header
 			}
 			LZC_SIZE_T decomp_size = LZC_GetDecompressedSize(&(dataIn[curPtr]));
 			if(decomp_size)
 			{
-				//cout << "decomp size: " << decomp_size << ' ' << (int)dataIn[curPtr] << endl;
-				//cout << "Needed: " << size_needed - curCompSize << ", " << size_needed << endl;
-				//cout << curPtr << ", " << curCompSize << ", " << vFrames[i].texDataSize << endl;
 				uint8_t* dataOut = (uint8_t*)malloc(decomp_size);
 				uint32_t readAmt = LZC_Decompress(&(dataIn[curPtr]), dataOut);
-				//cout << readAmt << endl;
-				//curPtr += readAmt-8;
-				curCompSize += decomp_size;
+				curPtr += readAmt;	//Skip forward to about where the next header should be 
+				curDecompSize += decomp_size;
 				dataSz.push_back(decomp_size);
 				pixelData.push_back(dataOut);
 			}
-			curPtr ++;	//Skip past this header so we don't hit it over and over...
-			//else
-			//	cout << "ERR Size = 0" << endl;
+			else
+			{
+				cout << "ERR Size = 0" << endl;
+				curPtr++;	//Skip past this header so we don't hit it over and over...
+			}
 		}
 		
 		//Figure out the total size we need to allocate
@@ -403,10 +436,7 @@ bool DecompressANB(string sFilename)
 		{
 			ostringstream oss;
 			oss << "./output/" << sName << i << '_' << ++iCurImg << ".png";
-			Vec2 maxul, maxbr;
-			list<piece> pieces;
-			saveImage(imageData[*j].data, imageData[*j].size, oss.str(), pieces, maxul, maxbr, texHead[*j]);
-			//free(dataOut);
+			saveImage(imageData[*j].data, imageData[*j].size, oss.str(), pieces[*j], frameExtents[*j].maxul, frameExtents[*j].maxbr, texHead[*j]);
 		}
 	}
 	

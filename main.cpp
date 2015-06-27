@@ -514,6 +514,8 @@ bool DecompressANB(string sFilename)
 			finalY += offsetY + animMaxY;
 		}
 		
+		finalY -= offsetY/2;
+		
 		//Allocate final image, and piece
 		FIBITMAP* finalSheet = FreeImage_Allocate(finalX, finalY, 32);
 		RGBQUAD q = {128,128,0,255};

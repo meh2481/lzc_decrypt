@@ -19,11 +19,42 @@ int32_t g_iOffset;
 
 typedef struct
 {
+	uint32_t headerSz;
+	uint32_t unk0;
+	uint32_t numFrames;
+	uint32_t numAnimations;
+	uint32_t frameListPtr;	//point to listPtr of FrameDesc
+	uint32_t animListPtr;	//point to listPtr of anim
+	//... //More stuff we don't care about
+} anbHeader;
+
+typedef struct
+{
+	uint32_t offset;	//generic pointer offset list
+} listPtr;//[]
+
+typedef struct
+{
+	uint32_t animIDHash;
+	uint32_t numFrames;
+	uint32_t unk0;
+	uint32_t animListPtr;	//point to listPtr of animFrame
+	uint32_t unk1;
+} anim;
+
+typedef struct
+{
+	uint32_t frameNo;
+	uint32_t unk0[2];
+} animFrame;
+
+typedef struct
+{
 	uint32_t type;
 	uint32_t width;
 	uint32_t height;
 	uint32_t unknown1[5];
-	//uint8_t data[]
+	//uint8_t data[]	//Followed by image data
 } texHeader;
 
 typedef struct
@@ -42,9 +73,10 @@ typedef struct
 
 typedef struct  
 {
-	int32_t	 texOffset; // offset from start of file to TexDesc
+	float    unk0[4];
+	int32_t	 texOffset; //point to texHeader
 	int32_t  texDataSize;
-	int32_t  pieceOffset; // offset from start of file to PiecesDesc
+	int32_t  pieceOffset; //point to PiecesDesc
 } FrameDesc;
 
 typedef struct
@@ -64,7 +96,7 @@ typedef struct
 typedef struct
 {
 	int32_t numPieces;
-	//piece[]
+	//piece[]	//followed by numPieces pieces
 } PiecesDesc;
 
 //Defined by the anb file format

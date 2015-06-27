@@ -109,16 +109,19 @@ FIBITMAP* imageFromPixels(uint8_t* imgData, uint32_t width, uint32_t height)
 
 FIBITMAP* PieceImage(uint8_t* imgData, list<piece> pieces, Vec2 maxul, Vec2 maxbr, texHeader th, bool bAdd)
 {
+	if(!imgData)
+		return FreeImage_Allocate(0,0,32);
+
 	Vec2 OutputSize;
 	Vec2 CenterPos;
 	OutputSize.x = -maxul.x + maxbr.x;
 	OutputSize.y = maxul.y - maxbr.y;
 	CenterPos.x = -maxul.x;
 	CenterPos.y = maxul.y;
-	OutputSize.x = uint32_t(OutputSize.x);
-	OutputSize.y = uint32_t(OutputSize.y);
+	OutputSize.x = (uint32_t)(OutputSize.x + 0.5f);
+	OutputSize.y = (uint32_t)(OutputSize.y + 0.5f);
 
-	FIBITMAP* result = FreeImage_Allocate(OutputSize.x+6, OutputSize.y+6, 32);
+	FIBITMAP* result = FreeImage_Allocate(OutputSize.x, OutputSize.y, 32);
 
 	//Create image from this set of pixels
 	FIBITMAP* curImg = imageFromPixels(imgData, th.width, th.height);
@@ -126,48 +129,18 @@ FIBITMAP* PieceImage(uint8_t* imgData, list<piece> pieces, Vec2 maxul, Vec2 maxb
 	//Patch image together from pieces
 	for(list<piece>::iterator lpi = pieces.begin(); lpi != pieces.end(); lpi++)
 	{
-		float add = 0;
-		if(bAdd)
-			add = 0.001;
 		FIBITMAP* imgPiece = FreeImage_Copy(curImg, 
-											floor((lpi->topLeftUV.x) * th.width - add), floor((lpi->topLeftUV.y) * th.height - add), 
-											ceil((lpi->bottomRightUV.x) * th.width + add), ceil((lpi->bottomRightUV.y) * th.height + add));
+											(int)((lpi->topLeftUV.x) * th.width + 0.5f), (int)((lpi->topLeftUV.y) * th.height + 0.5f), 
+											(int)((lpi->bottomRightUV.x) * th.width + 0.5f), (int)((lpi->bottomRightUV.y) * th.height + 0.5f));
 		
-		//Since FreeImage pasting doesn't allow you to paste an image onto a particular position of another, do that by hand
-		int curPos = 0;
-		int srcW = FreeImage_GetWidth(imgPiece);
-		int srcH = FreeImage_GetHeight(imgPiece);
-		unsigned pitch = FreeImage_GetPitch(imgPiece);
-		unsigned destpitch = FreeImage_GetPitch(result);
-		BYTE* bits = (BYTE*)FreeImage_GetBits(imgPiece);
-		BYTE* destBits = (BYTE*)FreeImage_GetBits(result);
+		//Paste this into the pieced image
 		Vec2 DestPos = CenterPos;
 		DestPos.x += lpi->topLeft.x;
-		//DestPos.y -= lpi->topLeft.y;
-		DestPos.y = OutputSize.y - srcH;
-		DestPos.y -= CenterPos.y;
-		DestPos.y += lpi->topLeft.y;
-		DestPos.x = (unsigned int)(DestPos.x);
-		DestPos.y = ceil(DestPos.y);
-		for(int y = 0; y < srcH; y++)
-		{
-			BYTE* pixel = bits;
-			BYTE* destpixel = destBits;
-			destpixel += (unsigned)((DestPos.y + y + 3)) * destpitch;
-			destpixel += (unsigned)((DestPos.x + 3) * 4);
-			for(int x = 0; x < srcW; x++)
-			{
-				destpixel[FI_RGBA_RED] = pixel[FI_RGBA_RED];
-				destpixel[FI_RGBA_GREEN] = pixel[FI_RGBA_GREEN];
-				destpixel[FI_RGBA_BLUE] = pixel[FI_RGBA_BLUE];
-				//if(pixel[FI_RGBA_ALPHA] != 0)
-					destpixel[FI_RGBA_ALPHA] = pixel[FI_RGBA_ALPHA];
-				pixel += 4;
-				destpixel += 4;
-			}
-			bits += pitch;
-		}
+		DestPos.y -= lpi->topLeft.y;	//y is negative here
+		DestPos.x = (uint32_t)(DestPos.x + 0.5f);
+		DestPos.y = (uint32_t)(DestPos.y + 0.5f);
 		
+		FreeImage_Paste(result, imgPiece, DestPos.x, DestPos.y, 256);
 		FreeImage_Unload(imgPiece);
 	}
 	FreeImage_Unload(curImg);
@@ -301,15 +274,15 @@ bool DecompressANB(string sFilename)
 					for(int k = startPos - sizeof(texHeader) - sizeof(FrameDesc); k > 0; k --)
 					{
 						memcpy(&fd, &(dataIn[k]), sizeof(FrameDesc));
-						if(fd.texOffset != headerPos + g_iOffset) continue;
+						if(fd.texOffset != headerPos) continue;
 						//Sanity check
 						if(fd.texDataSize > MAGIC_TEX_TOOBIG) continue;
-						if(fd.texOffset == 0 || fd.pieceOffset < g_iOffset || fd.pieceOffset + sizeof(PiecesDesc) > fileSize) continue;
+						if(fd.texOffset == 0 || fd.pieceOffset + sizeof(PiecesDesc) > fileSize) continue;
 						
 						//Ok, found our header. Grab pieces
 						pieces.clear();
 						PiecesDesc pd;
-						fd.pieceOffset -= g_iOffset;
+						//fd.pieceOffset -= g_iOffset;
 						memcpy(&pd, &(dataIn[fd.pieceOffset]), sizeof(PiecesDesc));
 						//cout << "Numpieces: " << pd.numPieces << endl;
 						if(pd.numPieces < 0 || pd.numPieces > MAGIC_TOOMANYPIECES) continue;

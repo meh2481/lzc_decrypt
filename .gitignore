@@ -1,6 +1,6 @@
 *.o
 *.d
-lzc_decrypt
+lzc_decrypt.exe
 .directory
 *.anb
 gmon.out

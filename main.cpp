@@ -469,15 +469,49 @@ bool DecompressANB(string sFilename)
 	{
 		//Figure out dimensions of final image
 		int finalX = offsetX;
-		int finalY = offsetY;
-		
+		int finalY = offsetY/2;
+		int totalWidthAvg = 0;
 		for(int i = 0; i < animExtents.size(); i++)
 		{
-			int animExtentX = (animExtents[i].maxbr.x - animExtents[i].maxul.x + offsetX) * vAnims[i].size() + offsetX;
+			int animExtentX = (int)(animExtents[i].maxbr.x - animExtents[i].maxul.x + offsetX + 0.5) * vAnims[i].size() + offsetX;
 			if(animExtentX > finalX)
 				finalX = animExtentX;
-				
-			finalY += (animExtents[i].maxul.y - animExtents[i].maxbr.y + offsetY);
+			totalWidthAvg += animExtentX;
+			finalY += (int)(animExtents[i].maxul.y - animExtents[i].maxbr.y + offsetY + 0.5);
+		}
+		
+		//Don't care if there's only a few
+		if(animExtents.size() > 5)
+			totalWidthAvg /= animExtents.size();
+		totalWidthAvg *= 1.5f;
+		
+		//If an animation is longer than double the size of the average, cut it up vertically
+		finalX = offsetX;
+		finalY = offsetY/2;
+		for(int i = 0; i < animExtents.size(); i++)
+		{
+			int animMaxX = (int)(animExtents[i].maxbr.x - animExtents[i].maxul.x + 0.5);
+			int animMaxY = (int)(animExtents[i].maxul.y - animExtents[i].maxbr.y + 0.5);
+			
+			animMaxX += offsetX;
+			int curAnimMaxX = 0;
+			for(int j = 0; j < vAnims[i].size(); j++)
+			{
+				if(curAnimMaxX + animMaxX > totalWidthAvg)
+				{
+					if(finalX < curAnimMaxX)				//Save final width
+						finalX = curAnimMaxX + offsetX;
+					
+					finalY += offsetY/2 + animMaxY;			//Offset vertically, spacing of 1 pixel instead of 2
+					curAnimMaxX = 0;						//Start next row
+				}
+				curAnimMaxX += animMaxX;
+			}
+			
+			if(finalX < curAnimMaxX)
+				finalX = curAnimMaxX + offsetX;
+			
+			finalY += offsetY + animMaxY;
 		}
 		
 		//Allocate final image, and piece
@@ -489,16 +523,26 @@ bool DecompressANB(string sFilename)
 		int curY = offsetY/2;
 		for(int i = 0; i < vAnims.size(); i++)
 		{
-			curX = offsetX;
+			int yAdd = 0;
 			for(vector<uint32_t>::iterator j = vAnims[i].begin(); j != vAnims[i].end(); j++)
 			{
 				FIBITMAP* bmp = createImage(imageData[*j].data, imageData[*j].size, pieces[*j], animExtents[i].maxul, animExtents[i].maxbr, texHead[*j]);
+				
+				yAdd = offsetY + FreeImage_GetHeight(bmp);
+			
+				//See if we should start next row in sprite sheet (if this anim is too long)
+				if(curX + FreeImage_GetWidth(bmp) + offsetX > totalWidthAvg)
+				{
+					curX = offsetX;
+					curY += FreeImage_GetHeight(bmp) + offsetY/2;
+				}
 				
 				FreeImage_Paste(finalSheet, bmp, curX, curY, 300);
 				curX += offsetX + FreeImage_GetWidth(bmp);
 				FreeImage_Unload(bmp);
 			}
-			curY += (animExtents[i].maxul.y - animExtents[i].maxbr.y + offsetY);
+			curY += yAdd;
+			curX = offsetX;
 		}
 		
 		ostringstream oss;

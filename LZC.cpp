@@ -184,7 +184,8 @@ DBG( "literal %02X\n", *in );
 		return 0;
 	}
 
-	void LZC_Decompress( uint8_t* in, uint8_t* out )
+	//MEH: Return how many compressed bytes were read
+	uint32_t LZC_Decompress( uint8_t* in, uint8_t* out )
 	{
 #ifdef DBG2FILE
 		FILE* dbgfh = fopen( "c:/dev/decompress.txt", "wb" );
@@ -236,6 +237,7 @@ DBG( "literal %02X\n", curByte );
 #ifdef DBG2FILE
 		fclose( dbgfh );
 #endif
+		return header->compressedSize;
 	}
 
 #endif // LZC_DECOMPRESS

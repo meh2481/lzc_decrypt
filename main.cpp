@@ -14,8 +14,6 @@
 using namespace std;
 
 bool g_bPieceTogether;
-bool g_bAdd;
-int32_t g_iOffset;
 
 typedef struct
 {
@@ -25,7 +23,7 @@ typedef struct
 	uint32_t numAnimations;
 	uint32_t frameListPtr;	//point to listPtr of FrameDesc
 	uint32_t animListPtr;	//point to listPtr of anim
-	//... //More stuff we don't care about
+	//... 					//Probably more stuff we don't care about
 } anbHeader;
 
 typedef struct
@@ -73,7 +71,10 @@ typedef struct
 
 typedef struct  
 {
-	float    unk0[4];
+	float    minx;
+	float 	 maxx;
+	float 	 miny;
+	float    maxy;
 	int32_t	 texOffset; //point to texHeader
 	int32_t  texDataSize;
 	int32_t  pieceOffset; //point to PiecesDesc
@@ -110,6 +111,7 @@ typedef struct
 #define MAGIC_IMAGE_TOOTALL		10000
 #define MAGIC_TEX_TOOBIG		6475888
 #define	MAGIC_TOOMANYPIECES		512
+#define FIRST_LZC_CHUNK_SZ      0x48
 
 FIBITMAP* imageFromPixels(uint8_t* imgData, uint32_t width, uint32_t height)
 {
@@ -139,7 +141,7 @@ FIBITMAP* imageFromPixels(uint8_t* imgData, uint32_t width, uint32_t height)
 	return curImg;
 }
 
-FIBITMAP* PieceImage(uint8_t* imgData, list<piece> pieces, Vec2 maxul, Vec2 maxbr, texHeader th, bool bAdd)
+FIBITMAP* PieceImage(uint8_t* imgData, list<piece> pieces, Vec2 maxul, Vec2 maxbr, texHeader th)
 {
 	if(!imgData)
 		return FreeImage_Allocate(0,0,32);
@@ -224,8 +226,8 @@ bool saveImage(uint8_t* data, uint32_t dataSz, string sFilename, list<piece> pie
 		cout << "Warning: Unknown image type: " << th.type << endl;
 	
 	FIBITMAP* bmp;
-	if(pieces.size())	//If we're patching pieces together (if g_bPieceTogether == true)
-		bmp = PieceImage(imgData.data(), pieces, maxul, maxbr, th, g_bAdd);
+	if(pieces.size())	//If we're patching pieces together here...
+		bmp = PieceImage(imgData.data(), pieces, maxul, maxbr, th);
 	else
 		bmp = FreeImage_ConvertFromRawBits(imgData.data(), th.width, th.height, th.width * 4, 32, 0x0000FF, 0x00FF00, 0xFF0000, true);
 	
@@ -266,9 +268,150 @@ bool DecompressANB(string sFilename)
 		namepos = sName.rfind('\\');
 	if(namepos != string::npos)
 		sName.erase(0, namepos+1);
+		
+	//Read in header
+	anbHeader ah;
+	memcpy(&ah, dataIn, sizeof(anbHeader));
+	
+	//Save FrameDescs
+	vector<FrameDesc> vFrames;
+	vFrames.reserve(ah.numFrames);
+	for(int i = 0; i < ah.numFrames; i++)
+	{
+		FrameDesc fd;
+		listPtr lp;
+		memcpy(&lp, &dataIn[ah.frameListPtr+i*sizeof(listPtr)], sizeof(listPtr));
+		memcpy(&fd, &dataIn[lp.offset], sizeof(FrameDesc));
+		
+		//TODO if minx > 0 or maxy < 0, horizontal or vertical offsets
+		
+		//cout << fd.minx << ", "  << fd.maxx << ", "  << fd.miny << ", "  << fd.maxy << endl;
+		
+		vFrames.push_back(fd);
+	}
+	
+	//Save animation frames
+	vector<vector<uint32_t> > vAnims;
+	vAnims.reserve(ah.numAnimations);
+	for(int i = 0; i < ah.numAnimations; i++)
+	{
+		anim a;
+		listPtr lp1;
+		memcpy(&lp1, &dataIn[ah.animListPtr+i*sizeof(listPtr)], sizeof(listPtr));
+		memcpy(&a, &dataIn[lp1.offset], sizeof(anim));
+		
+		vector<uint32_t> vAnimFrames;
+		vAnimFrames.reserve(a.numFrames);
+		for(int j = 0; j < a.numFrames; j++)
+		{
+			animFrame af;
+			listPtr lp2;
+			memcpy(&lp2, &dataIn[a.animListPtr+j*sizeof(listPtr)], sizeof(listPtr));
+			memcpy(&af, &dataIn[lp2.offset], sizeof(animFrame));
+			
+			vAnimFrames.push_back(af.frameNo);
+		}
+		vAnims.push_back(vAnimFrames);
+	}
+	
+	//Decompress image data
+	vector<chunk> imageData;
+	vector<texHeader> texHead;
+	for(int i = 0; i < ah.numFrames; i++)
+	{
+		//cout << "Frame: " << i << endl;
+		uint32_t curPtr = vFrames[i].texOffset;
+		
+		texHeader th;
+		memcpy(&th, &dataIn[curPtr], sizeof(texHeader));
+		curPtr += sizeof(texHeader);
+		texHead.push_back(th);
+		
+		//Skip over first LZC header; patch chunks together ourselves
+		LZC_Header lzch;
+		memcpy(&lzch, &dataIn[curPtr], sizeof(LZC_Header));
+		curPtr++;	//Skip this header
+		//cout << lzch.decompressedSize << " , " << lzch.compressedSize << endl;
+		
+		uint32_t curCompSize = 0;//sizeof(texHeader) + FIRST_LZC_CHUNK_SZ;
+		vector<uint8_t*> pixelData;
+		vector<LZC_SIZE_T> dataSz;
+		//Decompress loop
+		LZC_SIZE_T size_needed = lzch.decompressedSize;
+		while(curCompSize < size_needed)
+		{
+			while(true)
+			{
+				//Read forward until we find another LZC header...
+				if(memcmp(&(dataIn[curPtr]), "LZC", 3) == 0)
+				{
+					//LZC_Header lzch2;
+					//memcpy(&lzch2, &dataIn[curPtr], sizeof(LZC_Header));
+					//curPtr += FIRST_LZC_CHUNK_SZ;
+					//cout << "2: " << lzch2.decompressedSize << " , " << lzch2.compressedSize << endl;
+					break;
+				}
+					
+				//curCompSize++;
+				curPtr++;
+			}
+			LZC_SIZE_T decomp_size = LZC_GetDecompressedSize(&(dataIn[curPtr]));
+			if(decomp_size)
+			{
+				//cout << "decomp size: " << decomp_size << ' ' << (int)dataIn[curPtr] << endl;
+				//cout << "Needed: " << size_needed - curCompSize << ", " << size_needed << endl;
+				//cout << curPtr << ", " << curCompSize << ", " << vFrames[i].texDataSize << endl;
+				uint8_t* dataOut = (uint8_t*)malloc(decomp_size);
+				uint32_t readAmt = LZC_Decompress(&(dataIn[curPtr]), dataOut);
+				//cout << readAmt << endl;
+				//curPtr += readAmt-8;
+				curCompSize += decomp_size;
+				dataSz.push_back(decomp_size);
+				pixelData.push_back(dataOut);
+			}
+			curPtr ++;	//Skip past this header so we don't hit it over and over...
+			//else
+			//	cout << "ERR Size = 0" << endl;
+		}
+		
+		//Figure out the total size we need to allocate
+		LZC_SIZE_T totalSz = 0;
+		for(vector<LZC_SIZE_T>::iterator j = dataSz.begin(); j != dataSz.end(); j++)
+			totalSz += *j;
+			
+		chunk c;
+		c.size = totalSz;
+		c.data = (uint8_t*)malloc(totalSz);
+		
+		//Copy all the LZC chunks into this image
+		uint32_t curImgDataPos = 0;
+		for(int j = 0; j < dataSz.size(); j++)
+		{
+			memcpy(c.data + curImgDataPos, pixelData[j], dataSz[j]);
+			curImgDataPos += dataSz[j];
+			free(pixelData[j]);	//Free data while we're at it...
+		}
+		
+		imageData.push_back(c);
+	}
+	
+	//Supposedly this should be all the image data; let's test
+	for(int i = 0; i < vAnims.size(); i++)
+	{
+		int iCurImg = 0;
+		for(vector<uint32_t>::iterator j = vAnims[i].begin(); j != vAnims[i].end(); j++)
+		{
+			ostringstream oss;
+			oss << "./output/" << sName << i << '_' << ++iCurImg << ".png";
+			Vec2 maxul, maxbr;
+			list<piece> pieces;
+			saveImage(imageData[*j].data, imageData[*j].size, oss.str(), pieces, maxul, maxbr, texHead[*j]);
+			//free(dataOut);
+		}
+	}
 	
 	//Spin through the file and try to find LZC-compressed images
-	int iNum = 0;
+	/*int iNum = 0;
 	bool bTexHeader = true;
 	texHeader th;
 	FrameDesc fd;
@@ -419,41 +562,29 @@ bool DecompressANB(string sFilename)
 			else
 				cerr << "ERR decompressing image " << iNum << endl;
 		}
-	}
+	}*/
 	free(dataIn);
 }
 
 int usage()
 {
-	cout << "Usage: lzc_decrypt [-noadd|-nopiece|-offset=x] file.anb" << endl;
+	cout << "Usage: lzc_decrypt [-nopiece] file.anb" << endl;
 	return 1;
 }
 
 int main(int argc, char** argv)
 {
 	g_bPieceTogether = true;
-	g_bAdd = true;
-	g_iOffset = 24;
 	
 	list<string> sFilenames;
 	//Parse commandline
 	for(int i = 1; i < argc; i++)
 	{
 		string s = argv[i];
-		if(s == "-noadd")
-			g_bAdd = false;
-		else if(s == "-nopiece")
+		if(s == "-nopiece")
 			g_bPieceTogether = false;
 		else if(s.find(".anb") != string::npos)
 			sFilenames.push_back(s);
-		else if(s.find("-offset=") != string::npos)
-		{
-			size_t pos = s.find("-offset=") + 8;
-			s.erase(0, pos);
-			istringstream iss(s);
-			if(!(iss >> g_iOffset))
-				g_iOffset = 24;
-		}
 		else
 			cout << "Unrecognized commandline argument " << s << endl;
 	}

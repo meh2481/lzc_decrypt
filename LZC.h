@@ -100,7 +100,7 @@ typedef struct _LZC_Header
 	LZC_SIZE_T LZC_GetDecompressedSize( const uint8_t* const in );
 
 	//! LZC_Decompress()
-	void LZC_Decompress( uint8_t* in, uint8_t* out );
+	uint32_t LZC_Decompress( uint8_t* in, uint8_t* out );
 
 #endif // LZC_DECOMPRESS
 
